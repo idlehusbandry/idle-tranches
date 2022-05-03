@@ -25,14 +25,26 @@ contract IdleLeveragedAaveStrategy is Initializable, OwnableUpgradeable, ERC20Up
     /// @notice decimals of the underlying asset
     uint256 public override tokenDecimals;
 
+    uint256 public correlatedTokenDecimals;
+
     /// @notice one underlying token
     uint256 public override oneToken;
+
+    uint256 public oneCorrelatedToken;
 
     /// @notice address of the IdleCDO
     address public idleCDO;
 
     /// @notice underlying ERC20 token contract
     IERC20Detailed public underlyingToken;
+
+    IERC20Detailed public correlatedToken;
+
+    IERC20Detailed public underlyingDebtToken;
+
+    IERC20Detailed public correlatedDebtToken;
+
+    address public correlatedStrategyToken;
 
     ILendingPool public lendingPool;
 
@@ -46,7 +58,11 @@ contract IdleLeveragedAaveStrategy is Initializable, OwnableUpgradeable, ERC20Up
     function initialize(
         address _strategyToken,
         address _underlyingToken,
+        address _correlatedStrategyToken,
+        address _correlatedToken,
         ILendingPool _lendingPool,
+        address _underlyingDebtToken,
+        address _correlatedDebtToken,
         address _owner
     ) public initializer {
         OwnableUpgradeable.__Ownable_init();
@@ -54,20 +70,29 @@ contract IdleLeveragedAaveStrategy is Initializable, OwnableUpgradeable, ERC20Up
         require(token == address(0), "Token is already initialized");
 
         strategyToken = _strategyToken;
+        correlatedStrategyToken = _correlatedStrategyToken;
         token = _underlyingToken;
         underlyingToken = IERC20Detailed(_underlyingToken);
+        correlatedToken = IERC20Detailed(_correlatedToken);
         tokenDecimals = IERC20Detailed(_underlyingToken).decimals();
+        correlatedTokenDecimals = IERC20Detailed(_correlatedToken).decimals();
+        oneToken = 10**(tokenDecimals);
+        oneCorrelatedToken = 10**(correlatedTokenDecimals);
         lendingPool = _lendingPool;
 
-        borrowFraction = 60e18; // 100%
+        borrowFraction = 60e18; // 60%
+        underlyingDebtToken = IERC20Detailed(_underlyingDebtToken);
+        correlatedDebtToken = IERC20Detailed(_correlatedDebtToken);
 
         ERC20Upgradeable.__ERC20_init("Idle Leveraged Aave Strategy Token", string(abi.encodePacked("idleLAS", underlyingToken.symbol())));
         transferOwnership(_owner);
         IERC20Detailed(_underlyingToken).approve(address(_lendingPool), type(uint256).max);
+        IERC20Detailed(_correlatedToken).approve(address(_lendingPool), type(uint256).max);
     }
 
     function refreshAllowance() public {
         IERC20Detailed(underlyingToken).approve(address(lendingPool), type(uint256).max);
+        IERC20Detailed(correlatedToken).approve(address(lendingPool), type(uint256).max);
     }
 
     function redeemRewards(bytes calldata _extraData) external override onlyIdleCDO returns (uint256[] memory rewards) {}
@@ -94,11 +119,7 @@ contract IdleLeveragedAaveStrategy is Initializable, OwnableUpgradeable, ERC20Up
 
     function _depositToVault(uint256 amount) internal returns (uint256) {
         // aave-v2 ensure that same number aTokens are minted, hence return amount directly
-        uint256 scaledBalanceBefore = IAToken(strategyToken).scaledBalanceOf(address(this));
-        console.log("scaledBalanceBefore", scaledBalanceBefore);
         lendingPool.deposit(address(underlyingToken), amount, address(this), 0);
-        uint256 scaledBalanceAfter = IAToken(strategyToken).scaledBalanceOf(address(this));
-        console.log("scaledBalanceAfter", scaledBalanceAfter);
         _updateApr(int256(amount));
         return amount;
     }
@@ -129,24 +150,59 @@ contract IdleLeveragedAaveStrategy is Initializable, OwnableUpgradeable, ERC20Up
 
     function boostRewards(uint256 numberOfTimesToBoost) external onlyIdleCDO {
         for (uint256 index = 0; index < numberOfTimesToBoost; index++) {
-            uint256 aTokenBalance = IAToken(strategyToken).balanceOf(address(this));
-            console.log("aTokenBalance", aTokenBalance);
-
-            uint256 borrowAmount = (aTokenBalance * borrowFraction) / 1e20;
+            uint256 borrowAmount = _calculateBorrowAmountUnderlyingToCorrelated();
             console.log("borrowAmount", borrowAmount);
 
             if (borrowAmount == 0) {
                 return;
             }
 
-            uint256 underlyingTokenBalanceBefore = underlyingToken.balanceOf(address(this));
-            console.log("underlyingTokenBalanceBefore", underlyingTokenBalanceBefore);
-
-            lendingPool.borrow(address(underlyingToken), borrowAmount, 1, 0, address(this));
-
-            uint256 underlyingTokenBalanceAfter = underlyingToken.balanceOf(address(this));
-            console.log("underlyingTokenBalanceAfter", underlyingTokenBalanceAfter);
+            lendingPool.borrow(address(correlatedToken), borrowAmount, 1, 0, address(this));
+            _print();
+            lendingPool.deposit(address(correlatedToken), borrowAmount, address(this), 0);
+            // _print();
+            // borrowAmount = _calculateBorrowAmountCorrelatedToUnderlying();
+            // lendingPool.borrow(address(underlyingToken), borrowAmount, 1, 0, address(this));
+            // _print();
         }
+    }
+
+    function _calculateBorrowAmountUnderlyingToCorrelated() internal view returns (uint256) {
+        // borrows fraction of borrowable amount
+        uint256 underlyingAmountDeposited = IAToken(strategyToken).balanceOf(address(this));
+        uint256 scaledUnderlyingAmountDeposited = (underlyingAmountDeposited * oneCorrelatedToken) / oneToken;
+        uint256 correlatedDebtTokenBorrowed = IERC20Detailed(correlatedDebtToken).balanceOf(address(this));
+        if (correlatedDebtTokenBorrowed > scaledUnderlyingAmountDeposited) {
+            return 0;
+        } else {
+            return ((scaledUnderlyingAmountDeposited - correlatedDebtTokenBorrowed) * borrowFraction) / 1e20;
+        }
+    }
+
+    function _calculateBorrowAmountCorrelatedToUnderlying() internal view returns (uint256) {
+        uint256 correlatedAmountDeposited = IAToken(correlatedStrategyToken).balanceOf(address(this));
+        uint256 scaledCorrelatedAmountDeposited = (correlatedAmountDeposited * oneToken) / oneCorrelatedToken;
+        uint256 debtTokenBorrowed = IERC20Detailed(underlyingDebtToken).balanceOf(address(this));
+        if (debtTokenBorrowed > scaledCorrelatedAmountDeposited) {
+            return 0;
+        } else {
+            return ((scaledCorrelatedAmountDeposited - debtTokenBorrowed) * borrowFraction) / 1e20;
+        }
+    }
+
+    function _print() internal view {
+        uint256 underlyingTokenBalance = underlyingToken.balanceOf(address(this));
+        console.log("underlyingTokenBalance", underlyingTokenBalance);
+        uint256 correlatedTokenBalance = IERC20Detailed(correlatedToken).balanceOf(address(this));
+        console.log("correlatedTokenBalance", correlatedTokenBalance);
+        uint256 strategyTokenBalance = IERC20Detailed(strategyToken).balanceOf(address(this));
+        console.log("strategyTokenBalance", strategyTokenBalance);
+        uint256 correlatedStrategyTokenBalance = IERC20(correlatedStrategyToken).balanceOf(address(this));
+        console.log("correlatedStrategyTokenBalance", correlatedStrategyTokenBalance);
+        uint256 underlyingDebtBalance = underlyingDebtToken.balanceOf(address(this));
+        console.log("underlyingDebtBalance", underlyingDebtBalance);
+        uint256 correlatedDebtBalance = correlatedDebtToken.balanceOf(address(this));
+        console.log("correlatedDebtBalance", correlatedDebtBalance);
     }
 
     /// @notice Approximate APR
