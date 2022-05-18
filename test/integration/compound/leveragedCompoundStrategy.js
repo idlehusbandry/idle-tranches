@@ -19,6 +19,10 @@ const comp = "0xc00e94cb662c3520282e6f5717214004a7f26888"; // COMP token
 
 const dai_whale = "0x075e72a5eDf65F0A5f44699c7654C1a76941Ddc8";
 
+const uniswapV2RouterV2 = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
+
+const wrappedETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+
 const AMOUNT_TO_TRANSFER = BN("10000000000000000000000"); // 10000 DAI
 const AMOUNT_TO_USE = BN("1000000000000000000"); // 1 DAI
 
@@ -55,7 +59,15 @@ describe.only("Leverage Compound Strategy", async () => {
 
     await DAI.connect(dai_signer).transfer(user.address, AMOUNT_TO_TRANSFER);
 
-    await IdleLeveragedCompoundStrategy.connect(owner).initialize(strategyToken, DAIAddress, comptroller, owner.address);
+    await IdleLeveragedCompoundStrategy.connect(owner).initialize(
+      strategyToken,
+      DAIAddress,
+      comptroller,
+      comp,
+      uniswapV2RouterV2,
+      [comp, wrappedETH, DAIAddress],
+      owner.address
+    );
     await IdleLeveragedCompoundStrategy.connect(owner).setWhitelistedCDO(user.address);
 
     await TransparentUpgradableProxy.deployed();
