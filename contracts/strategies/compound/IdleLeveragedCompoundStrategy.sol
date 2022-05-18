@@ -167,12 +167,12 @@ contract IdleLeveragedCompoundStrategy is
 
     function boostRewards(uint256 numberOfTimes) external onlyIdleCDO {
         for (uint256 index = 0; index < numberOfTimes; index++) {
-            // uint256 cTokenBalanceAvailable = IERC20Detailed(strategyToken).balanceOf(address(this));
-            // console.log("cTokenBalanceAvailable", cTokenBalanceAvailable);
-            // uint256 amountAvailable = ICToken(strategyToken).balanceOfUnderlying(address(this));
-            // console.log("amountAvailable", amountAvailable);
+            uint256 cTokenBalanceAvailable = IERC20Detailed(strategyToken).balanceOf(address(this));
+            console.log("cTokenBalanceAvailable", cTokenBalanceAvailable);
+            uint256 amountAvailable = ICToken(strategyToken).balanceOfUnderlying(address(this));
+            console.log("amountAvailable", amountAvailable);
             uint256 borrowAmount = calculateBorrowableAmount();
-            // console.log("borrowAmount", borrowAmount);
+            console.log("borrowAmount", borrowAmount);
             uint256 status = ICToken(strategyToken).borrow(borrowAmount);
             require(status == 0, "Compound Error");
             status = ICToken(strategyToken).mint(borrowAmount);
@@ -190,10 +190,10 @@ contract IdleLeveragedCompoundStrategy is
     }
 
     function _print() internal view {
-        // (uint256 _error, uint256 accountLiquidity, uint256 shortfall) = IComptroller(comptroller).getAccountLiquidity(address(this));
-        // console.log("_error", _error);
-        // console.log("accountLiquidity", accountLiquidity);
-        // console.log("shortfall", shortfall);
+        (uint256 _error, uint256 accountLiquidity, uint256 shortfall) = IComptroller(comptroller).getAccountLiquidity(address(this));
+        console.log("_error", _error);
+        console.log("accountLiquidity", accountLiquidity);
+        console.log("shortfall", shortfall);
     }
 
     function calculateBorrowableAmount() public view returns (uint256) {
