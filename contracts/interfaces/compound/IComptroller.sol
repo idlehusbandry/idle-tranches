@@ -121,4 +121,6 @@ interface IComptroller {
     ) external view returns (uint256, uint256);
 
     function getAccountLiquidity(address account) external view returns (uint, uint, uint);
+
+    function claimComp(address holder) external;
 }
