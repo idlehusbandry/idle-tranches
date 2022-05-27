@@ -9,7 +9,6 @@ import "../../interfaces/compound/IComptroller.sol";
 import "../../interfaces/IUniswapV2Router02.sol";
 
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
@@ -22,8 +21,6 @@ contract IdleLeveragedCompoundStrategy is
     ReentrancyGuardUpgradeable,
     IIdleCDOStrategy
 {
-    using SafeERC20Upgradeable for IERC20Detailed;
-
     /// @notice underlying token address (eg DAI)
     address public override token;
 
@@ -68,6 +65,10 @@ contract IdleLeveragedCompoundStrategy is
     /// @notice one year, used to calculate the APR
     uint256 public constant YEAR = 365 days;
 
+    uint256 public minimumBorrowableAmount;
+
+    uint256 public maximumNumberOfTimesToBoostReward;
+
     function initialize(
         address _strategyToken,
         address _underlyingToken,
@@ -90,7 +91,10 @@ contract IdleLeveragedCompoundStrategy is
 
         borrowFraction = 60e18; // 60%
 
-        ERC20Upgradeable.__ERC20_init("Idle MStable Strategy Token", string(abi.encodePacked("idleMS", underlyingToken.symbol())));
+        ERC20Upgradeable.__ERC20_init(
+            "Idle Compound Leveraged Strategy Token",
+            string(abi.encodePacked("idleCL", underlyingToken.symbol()))
+        );
         address[] memory markets = new address[](1);
         markets[0] = _strategyToken;
         IComptroller(_comptroller).enterMarkets(markets);
@@ -101,6 +105,10 @@ contract IdleLeveragedCompoundStrategy is
 
         uniswapRouterPath = _routerPath;
         uniswapV2Router02 = IUniswapV2Router02(_uniswapV2Router02);
+
+        minimumBorrowableAmount = 10000000000000000;
+
+        maximumNumberOfTimesToBoostReward = 100;
     }
 
     function refreshAllowance() public {
@@ -151,7 +159,8 @@ contract IdleLeveragedCompoundStrategy is
 
     function deposit(uint256 _amount) external override onlyIdleCDO returns (uint256 minted) {
         if (_amount > 0) {
-            return _deposit(_amount);
+            minted = _deposit(_amount);
+            _boostRewards();
         }
     }
 
@@ -162,22 +171,31 @@ contract IdleLeveragedCompoundStrategy is
         require(status == 0, "Error during Compound Mint");
         uint256 cTokenBalanceAfter = IERC20Detailed(strategyToken).balanceOf(address(this));
         _updateApr(int256(_amount));
+        _claimGovernanceTokens();
         return cTokenBalanceAfter - cTokenBalanceBefore;
     }
 
-    function boostRewards(uint256 numberOfTimes) external onlyIdleCDO {
-        for (uint256 index = 0; index < numberOfTimes; index++) {
-            uint256 cTokenBalanceAvailable = IERC20Detailed(strategyToken).balanceOf(address(this));
-            console.log("cTokenBalanceAvailable", cTokenBalanceAvailable);
-            uint256 amountAvailable = ICToken(strategyToken).balanceOfUnderlying(address(this));
-            console.log("amountAvailable", amountAvailable);
+    function boostRewards() external onlyIdleCDO returns (uint256 numberOfTimesBoosted) {
+        numberOfTimesBoosted = _boostRewards();
+    }
+
+    function _boostRewards() internal returns (uint256 numberOfTimesBoosted) {
+        numberOfTimesBoosted = 0;
+        for (;;) {
+            numberOfTimesBoosted++;
+            if (numberOfTimesBoosted >= maximumNumberOfTimesToBoostReward) {
+                break;
+            }
+
             uint256 borrowAmount = calculateBorrowableAmount();
-            console.log("borrowAmount", borrowAmount);
+            if (borrowAmount <= minimumBorrowableAmount) {
+                break;
+            }
+
             uint256 status = ICToken(strategyToken).borrow(borrowAmount);
             require(status == 0, "Compound Error");
             status = ICToken(strategyToken).mint(borrowAmount);
             require(status == 0, "Compound Error");
-            _print();
         }
     }
 
@@ -189,11 +207,12 @@ contract IdleLeveragedCompoundStrategy is
         _updateApr(-int256(amount));
     }
 
-    function _print() internal view {
-        (uint256 _error, uint256 accountLiquidity, uint256 shortfall) = IComptroller(comptroller).getAccountLiquidity(address(this));
-        console.log("_error", _error);
-        console.log("accountLiquidity", accountLiquidity);
-        console.log("shortfall", shortfall);
+    function updateMaximumNumberOfTimesToBoostReward(uint256 newValue) external onlyOwner {
+        maximumNumberOfTimesToBoostReward = newValue;
+    }
+
+    function updateMinimumBorrowableAmount(uint256 newValue) external onlyOwner {
+        minimumBorrowableAmount = newValue;
     }
 
     function calculateBorrowableAmount() public view returns (uint256) {
@@ -217,7 +236,8 @@ contract IdleLeveragedCompoundStrategy is
     /// @notice net price in underlyings of 1 strategyToken
     /// @return _price
     function price() public view override returns (uint256 _price) {
-        return ICToken(strategyToken).exchangeRateStored();
+        (, uint256 accountLiquidity, uint256 shortfall) = IComptroller(comptroller).getAccountLiquidity(address(this));
+        return ((accountLiquidity - shortfall) * ICToken(strategyToken).exchangeRateStored()) / accountLiquidity;
     }
 
     /// @notice Get the reward token

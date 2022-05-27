@@ -97,6 +97,15 @@ describe.only("Leverage Compound Strategy", async () => {
   it("Boost Reward", async () => {
     await DAI.connect(user).approve(IdleLeveragedCompoundStrategy.address, AMOUNT_TO_USE);
     await IdleLeveragedCompoundStrategy.connect(user).deposit(AMOUNT_TO_USE);
-    await IdleLeveragedCompoundStrategy.connect(user).boostRewards(10);
+    await IdleLeveragedCompoundStrategy.connect(user).boostRewards();
   });
+
+  it("Redeem Reward", async () => {
+    await DAI.connect(user).approve(IdleLeveragedCompoundStrategy.address, AMOUNT_TO_USE);
+    await IdleLeveragedCompoundStrategy.connect(user).deposit(AMOUNT_TO_USE);
+    let aprBefore = await IdleLeveragedCompoundStrategy.connect(user).getApr();
+    await IdleLeveragedCompoundStrategy.connect(user).redeem(AMOUNT_TO_USE.div(2));
+    let aprAfter = await IdleLeveragedCompoundStrategy.connect(user).getApr();
+    console.log({aprAfter: aprAfter.toString(), aprBefore: aprBefore.toString()})
+  })
 });
